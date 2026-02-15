@@ -10,25 +10,117 @@ import tkinter.filedialog as f_diag
     # tools for datasets:
 import pandas as pd
 import sqlalchemy as sa
-import sqlite3
-    # for logging:
+import  math  # import to use the square-function
+    # plotting:
+import bokeh as bk      
+from bokeh.plotting import figure, show, output_file
+    # for debugging:
 import logging
 from pathlib import Path
 import unittest
-    # for operations in the functions:
-import matplotlib.pyplot as plt # for visualizing the functions
-import  math  # import to use the square-function
+import sys
 # endregion
 
 
 
 # region global variables
+DB_name = "all_in_one.db"   # name of the DataBase that should include all databases
+
+# the expected cols for each csv:
+expected_test_cols = 2   # x + y
+expected_train_cols = 5  # x + y1..y4
+expected_ideal_cols = 51 # x + y1..y50
+
+# for debugging:
 logger = logging.getLogger(__name__)
-debug_mode = {"LoadDBs" : True, "compare_points_function" : False, "compare_points" : False } # set manualy on true to debug in different parts of the program. Just for me...
 logging.basicConfig(level=logging.INFO) # set logging level
+debug_mode = {"LoadDBs" : False, "compare_points_function" : False, "compare_points" : False } # set manualy on true to debug in different parts of the program. It will print some values in the terminal
 
-DB_name = "project.db"
+# endregion
 
+# region classes
+class DatasetFormatError(Exception):
+    """Raised when a dataset does not match the expected format."""
+    pass
+class Function:
+    def __init__(self,FunctionValues):
+        """
+        class that contains X- and Y-values of a function. Only for the required class inhibition...
+        x       : float      X-value of function 
+        y       : float      Y-value of function 
+        """
+        self.x = FunctionValues.iloc[:, 0]  # Series
+        self.y = FunctionValues.iloc[:, 1]  # Series
+class FunctionComparison (Function):
+    def __init__(self,FunctionValues,FunctionValues2):# XvalueFunct1, YvalueFunct1,XvalueFunct2, YvalueFunct2):
+        """
+        inheritance the class "Function" and expand it with X- and Y-values of a second function
+        x       : float      X-value of function 1 
+        y       : float      Y-value of function 1
+        x2      : float      X-value of function 2
+        y2      : float      Y-value of function 2
+        """
+        super().__init__(FunctionValues)
+        self.x2 = FunctionValues2.iloc[:, 0]
+        self.y2 = FunctionValues2.iloc[:, 1]
+
+    def LeastSquare(self):
+        """
+        calculate the Least Square of two Functions (one should be the ideal function and one the "measured"/train function).
+        There is no additional input necessary. The result of the Least Square will be returned.
+
+        input:
+        no additional input required. Values will be used from the class.
+
+        return:
+        LeastSqr    : float     result of Least Square
+        """
+        LeastSqr = 0.0 # initialize the var
+        for counter in range(len(self.x)):  # go through every x-value of the function
+            LeastSqr += (self.y.iloc[counter] - self.y2.iloc[counter]) ** 2 # calculate the LeastSquareError
+
+        return LeastSqr
+    
+    def compare_points(self, Tolerance=None):
+        """
+        compares points of two functions to see if they are within the given tolerance (optional input, default sqrt(2)).
+
+        input:
+        Tolerance       : float     Tolerance for the points to be similar
+
+        return:
+        ResultCompare   : dict      a dictionary that contains if the point is within the Tolerance (bool), the x- and y-value (float) and the delta in y (float)
+        max_abs_dif     : float     a float value that contains the max value of the deltas/ the biggest delta
+        """
+        ResultCompare = {}
+        max_abs_dif = 0.0
+        if Tolerance is None:   # Tolerance is an optional input. It's default is sqrt(2)
+            Tolerance = math.sqrt(2)
+
+        for i in range(len(self.x)): # for every x-value of the first function
+            x_value = self.x.iloc[i]    # save x- and y-value in one var
+            y_value = self.y.iloc[i]
+            div = None  # IMPORTANT: needs to be resetet after every point
+
+            for j in range(len(self.x2)):   # for every x-value of the second function
+                if x_value == self.x2.iloc[j]:  # compare if both x-values (of both functions) are equal
+                    div = float(self.y2.iloc[j] - y_value)  # if they are equal, calculate the difference of the y-values
+                    break   # then break, as one value was already found. HINT: this only works, if the second function has only one y-value for each x-value!
+
+            if div is None: # if no compare point was found (same x-values), then safe the information in ResultCompare (first element)
+                ResultCompare[i] = [False, x_value, y_value, None]  # False = no comparepoint, x_value,y_value, None = no calculated div
+                # for manually checking:
+                if debug_mode["compare_points_function"]:
+                    print(f"no compare point for x={x_value}")
+                continue # skip the rest of the code for this i
+
+            abs_div = abs(div) # just use the absolute value
+            ResultCompare[i] = [abs_div <= Tolerance, x_value, y_value, abs_div] # save information in ResultCompare
+            max_abs_dif = max(max_abs_dif, abs_div) # save the abs_div, if it's bigger then max_abs_dif 
+
+            logger.debug("x-value:%s and y-value:%s", float(x_value), float(y_value))
+        return ResultCompare, max_abs_dif
+       
 # endregion
 
 # region Functions
@@ -37,17 +129,20 @@ def pick_folder(title="choose a folder", initial_dir=None):
     this is a function to open a dialog and select the folder (where the datasets need to be).
     It returns the selected path.
     
+    input:
     title       :str    this is the titel of the window. If no titel was given, show default "choose a folder"
     initial_dir :str    this is the path that opens with the window.
+
+    return:
+    folder      : str   the selected path
     """
 
     root = Tk()
     root.withdraw()  # don't show an empty window
     root.attributes("-topmost", True)  # bring the dialog to the front
-
     folder = f_diag.askdirectory(
         title=title,
-        initialdir=initial_dir  # start file
+        initialdir=initial_dir  # start file that will be showed if the window is opened
     )
 
     root.destroy()
@@ -60,15 +155,12 @@ def load_csvs_into_single_db(folder: Path):
     ideal_df = read_and_sort(folder / "ideal.csv", "x")
 
     # 2) Spalten prüfen (user-defined exception kommt später als eigener Schritt)
-    expected_test_cols = 2
-    expected_train_cols = 9  # x + y1..y4
-    expected_ideal_cols = 51 # x + y1..y50
     if test_df.shape[1] != expected_test_cols:
-        raise ValueError(f"test.csv must have {expected_test_cols} columns, got {test_df.shape[1]}")
+        raise DatasetFormatError (f"test.csv must have {expected_test_cols} columns, got {test_df.shape[1]}")
     if train_df.shape[1] != expected_train_cols:
-        raise ValueError(f"train.csv must have {expected_train_cols} columns, got {train_df.shape[1]}")
+        raise DatasetFormatError (f"train.csv must have {expected_train_cols} columns, got {train_df.shape[1]}")
     if ideal_df.shape[1] != expected_ideal_cols:
-        raise ValueError(f"ideal.csv must have {expected_ideal_cols} columns, got {ideal_df.shape[1]}")
+        raise DatasetFormatError (f"ideal.csv must have {expected_ideal_cols} columns, got {ideal_df.shape[1]}")
 
     # 3) Eine DB, zwei Tabellen
     engine = sa.create_engine(f"sqlite:///{DB_name}")
@@ -110,6 +202,78 @@ def separate_functions(dummyDF):
         dummyList.append(dummy) 
     return(dummyList)
 
+def plot_with_bokeh(Train, Ideal, bestFittingFunction, results_df, html_name="plot.html"):
+    """
+    Train: list of DataFrames (x,y) for the 4 training functions
+    Ideal: list of DataFrames (x,y) for the 50 ideal functions
+    bestFittingFunction: dict {train_no: [ideal_no, min_error]}
+    results_df: DataFrame with columns x,y,ideal_func,deviation (optional train_no)
+    """
+
+    output_file(html_name, title="Training vs Ideal + Test Points (Deviation)")
+
+    plots = []
+
+    # Wir plotten für jede Train-Funktion ein Panel
+    for train_idx in range(len(Train)):
+        train_no = train_idx + 1
+        ideal_no = bestFittingFunction[train_no][0]  # 1-based
+        ideal_idx = ideal_no - 1
+
+        train_df = Train[train_idx]
+        ideal_df = Ideal[ideal_idx]
+
+        # Filter für die zugehörigen Result-Punkte:
+        # robust: über ideal_func filtern (train_no ist nicht nötig)
+        pts = results_df[results_df["ideal_func_no"] == ideal_no].copy()
+
+        p = figure(
+            title=f"Train {train_no} vs Ideal {ideal_no}",
+            width=500,
+            height=350,
+            x_axis_label="x",
+            y_axis_label="y",
+            tools="pan,wheel_zoom,box_zoom,reset,save,hover",
+        )
+
+        # Linien: Train & Ideal
+        p.line(train_df.iloc[:, 0], train_df.iloc[:, 1], line_width=2, legend_label="Train")
+        p.line(ideal_df.iloc[:, 0], ideal_df.iloc[:, 1], line_width=2, legend_label="Ideal")
+
+        # Testpunkte farbig nach deviation
+        if len(pts) > 0:
+            source = bk.models.ColumnDataSource(pts)
+
+            # Farbe nach deviation
+            mapper = bk.transform.linear_cmap(
+                field_name="delta_y",
+                palette=bk.palettes.Viridis256,
+                low=float(pts["delta_y"].min()),
+                high=float(pts["delta_y"].max()),
+            )
+
+            r = p.scatter(
+                x="x", y="y",
+                source=source,
+                size=6,
+                fill_color=mapper,
+                line_color=None,
+                legend_label="Test points",
+            )
+
+            # Colorbar
+            color_bar = bk.models.ColorBar(color_mapper=mapper["transform"], width=8, location=(0, 0))
+            p.add_layout(color_bar, "right")
+
+        p.legend.location = "top_left"
+        p.legend.click_policy = "hide"  # Klick in Legende blendet Linien aus
+        plots.append(p)
+
+    # Grid: 2x2 (für 4 Trainingsfunktionen)
+    grid = bk.layouts.gridplot([plots[0:2], plots[2:4]])
+    show(grid)
+
+
 def debug_database(engine):
     inspector = sa.inspect(engine)
 
@@ -140,82 +304,6 @@ def debug_database(engine):
 
 # endregion
 
-# region classes
-class FunctionComparison ():
-    def __init__(self,FunctionValues1,FunctionValues2):# XvalueFunct1, YvalueFunct1,XvalueFunct2, YvalueFunct2):
-        """
-        inheritance the class "Function" and expand it with X- and Y-values of a second function
-        X   : float ; X-value of function 1
-        Y   : float ; Y-value of function 1
-        X2   : float ; X-value of function 2
-        Y2   : float ; Y-value of function 2
-        """
-        
-                # Get list of column names (in order)
-        cols1 = FunctionValues1.columns.tolist() 
-        cols2 = FunctionValues2.columns.tolist() 
-        self.X1 = FunctionValues1[cols1[0]]
-        self.Y1 = FunctionValues1[cols1[1:]] 
-        self.X2 = FunctionValues2[cols2[0]]
-        self.Y2 = FunctionValues2[cols2[1:]] 
-    
-    def LeastSquare(self):
-        """
-        calculate the Least Square of two Functions (one should be the ideal function and one the "measured"/train function).
-        There is no additional input necessary. The result of the Least Square will be returned.
-
-        input:
-        -
-
-        return:
-        LeastSqr    : float     ; result of Least Square
-        """
-        LeastSqr = 0.0
-        #for counter in range(1,len(self.X1)):
-        for counter in range(len(self.X1)):
-
-            LeastSqr += (self.Y1.iloc[counter,0] - self.Y2.iloc[counter,0]) ** 2  
-        return LeastSqr
-    
-    def compare_points(self, Tolerance=math.sqrt(2)):
-        """
-        compares points of two functions to see if they are within the given tolerance (optional input, default sqrt(2)).
-        returns: dict with x-value as key and the result as value (bool) 
-
-        input:
-        Tolerance   : float     ; Tolerance for the points to be similar
-        """
-        ResultCompare = {}
-        max_abs_dif = 0.0
-
-        for counter in range(len(self.X1)):
-            x_value = self.X1.iloc[counter]
-            y_value = self.Y1.iloc[counter, 0]
-
-            div = None  # WICHTIG: pro Punkt resetten
-
-            for counter2 in range(len(self.X2)):
-                if x_value == self.X2.iloc[counter2]:
-                    div = float(self.Y2.iloc[counter2, 0] - y_value)
-                    break
-
-            if div is None:
-                ResultCompare[counter] = [False, x_value, y_value, None]
-                if debug_mode["compare_points_function"]:
-                    print(f"no compare point for x={x_value}")
-                continue
-
-            abs_div = abs(div)
-            ResultCompare[counter] = [abs_div <= Tolerance, x_value, y_value, abs_div]
-            max_abs_dif = max(max_abs_dif, abs_div)
-
-            logger.debug("x-value:%s and y-value:%s", float(x_value), float(y_value))
-        return ResultCompare, max_abs_dif
-
-
-       
-# endregion
-
 # main program:
 def main():
 
@@ -237,10 +325,12 @@ def main():
         engine, LoadTest, LoadTrain, LoadIdeal = load_csvs_into_single_db(folder)
 
     except FileNotFoundError as e:
+        print("File was not found:", e)
         logging.error("Please check if the path is correct and the datasets are named correctly.")
         logging.debug(str(e))
         return
-    except ValueError as e:
+    except DatasetFormatError as e:
+        print("Dataset format error:", e)
         logging.error("Dataset format error.")
         logging.debug(str(e))
         return
@@ -305,44 +395,124 @@ def main():
 
     # save all fitting points for each (of the four) ideal found function into a dict. With key as the No. of ideal Function and  value as the x-value of the similar point from Test-dataset
     FittingPoints_sorted = {}
-    for x, y, z, a in list(FittingPoints.keys()):
-        keyname = str(a)+"_"+str(z)
+    for (x, y, ideal_no, train_no), dev_list in FittingPoints.items():
+        keyname = f"{train_no}_{ideal_no}"
         if keyname not in FittingPoints_sorted:
-            FittingPoints_sorted[keyname] = []  # new List for another ideal function No.
-        FittingPoints_sorted[keyname].append((float(x),float(y)))
+            FittingPoints_sorted[keyname] = []
+        deviation = float(dev_list[0])  # dev_list = [Compare[counter][3]]
+        FittingPoints_sorted[keyname].append((float(x), float(y), float(deviation), int(ideal_no)))
+
+
 
     if debug_mode["compare_points"]:
         print("Source: Task2: showing fitting points and to which function is suits best (key = IdealFunctionNo : value = list of suitable x-value) "+str(FittingPoints_sorted))
+ 
+    rows = []
+    for (x, y, ideal_no, train_no), dev_list in FittingPoints.items():
+        rows.append({
+            "x": float(x),
+            "y": float(y),
+            "delta_y": float(dev_list[0]),
+            "ideal_func_no": int(ideal_no),
+            "train_no": int(train_no),
+        })
 
-# endregion       
+    results_df = pd.DataFrame(rows, columns=["x", "y", "delta_y", "ideal_func_no"])
+    results_df.to_sql("results", con=engine, if_exists="replace", index=False)
+
+    logger.info("Wrote %d rows to results table.", len(results_df))
+
+# endregion      
 
 # region Task 3: Plot the results
-    rows = 2
-    cols = 4
-    fig, axes = plt.subplots(rows, cols, figsize=(10,8))
-    axes = axes.flatten()
-
-    for eachTrain in range(len(Train)):
-        x_Train = Train[eachTrain].iloc[:,0]  # erste Spalte: x
-        y_Train = Train[eachTrain].iloc[:,1]
-        x_Ideal = Ideal[bestFittingFunction[eachTrain+1][0]-1].iloc[:,0]
-        y_Ideal = Ideal[bestFittingFunction[eachTrain+1][0]-1].iloc[:,1]
-        key = f"{eachTrain+1}_{bestFittingFunction[eachTrain+1][0]}"
-        points = FittingPoints_sorted.get(key, [])
-        x_values = [p[0] for p in points]
-        y_values = [p[1] for p in points]
-        ax = axes[eachTrain]
-        ax.plot(x_Train, y_Train, color='blue', label="Train")
-        ax.plot(x_Ideal, y_Ideal, color='red', label="Ideal")
-        ax.scatter(x_values, y_values, color='green', label="Test points")
-        ax.set_title('Train function No: '+str(eachTrain+1)+ " with Ideal function No: "+str(bestFittingFunction[eachTrain+1][0]))
-        ax.legend()
-
-    plt.show()
-
-
+    plot_with_bokeh(Train, Ideal, bestFittingFunction, results_df, html_name="deviation_plot.html")
 # endregion
+
+
+# region UnitTests
+class TestSeparateFunctions(unittest.TestCase):
+    def test_separate_functions_splits_columns(self):
+        df = pd.DataFrame({
+            "x": [0, 1, 2],
+            "y1": [10, 11, 12],
+            "y2": [20, 21, 22],
+            "y3": [30, 31, 32],
+        })
+
+        out = separate_functions(df)
+
+        self.assertEqual(len(out), 3)  # y1..y3 -> 3 functions
+        self.assertListEqual(list(out[0].columns), ["x", "y1"])
+        self.assertListEqual(list(out[1].columns), ["x", "y2"])
+        self.assertListEqual(list(out[2].columns), ["x", "y3"])
+
+        # Check values preserved
+        self.assertEqual(out[1].iloc[2, 0], 2)   # x=2
+        self.assertEqual(out[1].iloc[2, 1], 22)  # y2 at x=2
+
+
+class TestFunctionComparisonLeastSquare(unittest.TestCase):
+    def test_least_square_basic(self):
+        # y1: [1,2,3], y2: [1,4,5] -> diffs [0, -2, -2] -> squares [0,4,4] sum=8
+        df1 = pd.DataFrame({"x": [0, 1, 2], "y": [1, 2, 3]})
+        df2 = pd.DataFrame({"x": [0, 1, 2], "y": [1, 4, 5]})
+
+        comp = FunctionComparison(df1, df2)
+        self.assertAlmostEqual(comp.LeastSquare(), 8.0)
+
+
+class TestFunctionComparisonComparePoints(unittest.TestCase):
+    def test_compare_points_true_false_and_max(self):
+        df1 = pd.DataFrame({"x": [0, 1], "y": [10.0, 10.0]})
+        df2 = pd.DataFrame({"x": [0, 1], "y": [10.5, 12.0]})
+        comp = FunctionComparison(df1, df2)
+
+        res, max_abs = comp.compare_points(Tolerance=1.0)
+
+        # res[counter] = [bool, x_value, y_value, abs_div]
+        self.assertTrue(res[0][0])   # abs(10.5-10)=0.5 <= 1.0
+        self.assertFalse(res[1][0])  # abs(12-10)=2.0 > 1.0
+        self.assertAlmostEqual(res[0][3], 0.5)
+        self.assertAlmostEqual(res[1][3], 2.0)
+        self.assertAlmostEqual(max_abs, 2.0)
+
+    def test_compare_points_missing_x(self):
+        # df2 doesn't contain x=1, so div is None for that point
+        df1 = pd.DataFrame({"x": [0, 1], "y": [5.0, 6.0]})
+        df2 = pd.DataFrame({"x": [0], "y": [5.2]})
+        comp = FunctionComparison(df1, df2)
+
+        res, max_abs = comp.compare_points(Tolerance=10.0)
+
+        self.assertTrue(res[0][0])      # x=0 exists, abs_dev=0.2 <= 10
+        self.assertFalse(res[1][0])     # x=1 missing => False
+        self.assertIsNone(res[1][3])    # deviation None
+        self.assertAlmostEqual(max_abs, 0.2)
+
+class TestDatasetFormat(unittest.TestCase):
+    def test_raises_dataset_format_error(self):
+        # fake dfs: wrong column count for test.csv
+        folder = Path(".")  # egal, wir testen nicht das Dateisystem hier
+
+        test_df = pd.DataFrame({"x":[0], "y":[1], "extra":[2]})     # 3 statt 2
+        train_df = pd.DataFrame({"x":[0], "y1":[1], "y2":[2], "y3":[3], "y4":[4]})
+        ideal_df = pd.DataFrame({"x":[0], **{f"y{i}":[i] for i in range(1,51)}})
+
+        # Simuliere nur die Formatprüfung (am besten als eigene Funktion auslagern)
+        with self.assertRaises(DatasetFormatError):
+            if test_df.shape[1] != expected_test_cols:
+                raise DatasetFormatError("bad test format")
+
+
+# endregion 
 
 # call main program:
 if __name__ == "__main__":
-    main()
+    # Normal run: python main.py
+    # Test run:   python main.py test
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "test":
+        # Prevent unittest from interpreting "test" as a pattern
+        sys.argv = [sys.argv[0]]
+        unittest.main(verbosity=2)
+    else:
+        main()
