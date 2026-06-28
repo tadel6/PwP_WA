@@ -5,8 +5,7 @@ This repository was created to practice using Git.
 It contains the source code of the assignment.
 
 ## Libraries
-tkinter 
-
+tkinter /n
 pandas
 
 sqlalchemy
