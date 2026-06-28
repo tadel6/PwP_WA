@@ -5,7 +5,8 @@ This repository was created to practice using Git.
 It contains the source code of the assignment.
 
 ## Libraries
-tkinter /n
+tkinter
+
 pandas
 
 sqlalchemy
@@ -26,6 +27,8 @@ sys
 Normal run:
 
 python main.py
+
+
 
 Unit tests:
 
