@@ -1,4 +1,4 @@
-# Written assignment - programming task
+# Programming with Python - WA
 
 This repository was created to practice using Git.
 
